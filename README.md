@@ -66,4 +66,3 @@ The program demonstrates:
 =======
 # raft-project
 A simplified Java implementation of the Raft consensus algorithm featuring leader election, log replication, and a distributed in-memory key-value store.
->>>>>>> 68cf841293000c3e4e6fadba8af62eb935dbfd30
