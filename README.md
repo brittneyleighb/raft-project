@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Simplified Raft-Based Distributed Key-Value Store
 
 ## Overview
@@ -63,3 +64,7 @@ The program demonstrates:
 
 - Ongaro, D., & Ousterhout, J. *In Search of an Understandable Consensus Algorithm (Raft)*, 2014.
 - Coulouris, G., Dollimore, J., Kindberg, T., & Blair, G. *Distributed Systems: Concepts and Design*, 6th Edition.
+=======
+# raft-project
+A simplified Java implementation of the Raft consensus algorithm featuring leader election, log replication, and a distributed in-memory key-value store.
+>>>>>>> 68cf841293000c3e4e6fadba8af62eb935dbfd30
