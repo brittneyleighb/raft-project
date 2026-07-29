@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Simplified Raft-Based Distributed Key-Value Store
 
 ## Overview
