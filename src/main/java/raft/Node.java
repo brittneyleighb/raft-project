@@ -17,7 +17,7 @@ public class Node {
     private NodeState state;
     private int currentTerm;
     private Integer votedFor;
-    private List<Node> peers = new ArrayList();
+    private List<Node> peers = new ArrayList<>();
 
     // Concurrency & Networking
     private final ExecutorService rpcPool = Executors.newCachedThreadPool();
@@ -38,12 +38,22 @@ public class Node {
     private int lastApplied = -1;
 
     public Node(int id) {
+        this(id, true);
+    }
+
+    /**
+     * Disable background election timers for deterministic protocol unit tests.
+     * Production demos use the public constructor with timers enabled.
+     */
+    Node(int id, boolean enableElectionTimer) {
         this.id = id;
         this.state = NodeState.FOLLOWER;
 
         resetElectionTimeout();
 
-        startElectionTimer();
+        if (enableElectionTimer) {
+            startElectionTimer();
+        }
     }
 
     // Randomize the election timeout and restart the timer.
@@ -56,7 +66,7 @@ public class Node {
         lastHeartbeatTime = System.currentTimeMillis();
     }
 
-    public void setPeers(List<Node> peers) {
+    public synchronized void setPeers(List<Node> peers) {
         this.peers = new ArrayList<>(peers);
     }
 
@@ -130,10 +140,13 @@ public class Node {
 
         // Broadcast requests concurrently without blocking the node
         final int termAtRequest = currentTerm;
+        // Raft §5.4.1: voters compare the candidate's last log term, then index.
+        final int lastLogIndex = log.size() - 1;
+        final int lastLogTerm = lastLogIndex >= 0 ? log.get(lastLogIndex).getTerm() : 0;
 
         for (Node peer : peers) {
             rpcPool.submit(() -> {
-                if (peer.requestVote(id, termAtRequest)) {
+                if (peer.requestVote(id, termAtRequest, lastLogIndex, lastLogTerm)) {
                     int votes = voteCount.incrementAndGet();
                     handleVoteGranted(votes, majority, termAtRequest);
                 }
@@ -150,25 +163,51 @@ public class Node {
         }
     }
 
-    public synchronized boolean requestVote(int candidateId, int candidateTerm) {
-        if (networkMuted) return false; // Drop incoming vote request silently if isolated
+    /**
+     * Simplified RequestVote receiver with the two core election-safety guards:
+     * one candidate per term, and candidate-log up-to-date ordering (term, index).
+     *
+     * A complete Raft implementation would persist currentTerm, votedFor and log
+     * before replying; this in-memory classroom simulator does not.
+     */
+    public synchronized boolean requestVote(
+            int candidateId,
+            int candidateTerm,
+            int candidateLastLogIndex,
+            int candidateLastLogTerm) {
 
-        // Rule 1: If term is higher, update local term and revert to Follower
-        if (candidateTerm > this.currentTerm) {
-            this.currentTerm = candidateTerm;
-            this.state = NodeState.FOLLOWER;
-            this.votedFor = null;
+        if (networkMuted) return false;
+
+        if (candidateTerm < currentTerm) {
+            return false;
         }
 
-        // Rule 2: Vote YES if terms match and node hasn't voted yet in this term
-        if (candidateTerm == this.currentTerm && (votedFor == null || votedFor == candidateId)) {
+        if (candidateTerm > currentTerm) {
+            // A new term is the ONLY reason to forget the previous term's vote.
+            currentTerm = candidateTerm;
+            state = NodeState.FOLLOWER;
+            votedFor = null;
+        }
+
+        int localLastLogIndex = log.size() - 1;
+        int localLastLogTerm =
+                localLastLogIndex >= 0 ? log.get(localLastLogIndex).getTerm() : 0;
+        boolean candidateLogUpToDate =
+                candidateLastLogTerm > localLastLogTerm
+                || (candidateLastLogTerm == localLastLogTerm
+                    && candidateLastLogIndex >= localLastLogIndex);
+
+        if ((votedFor == null || votedFor == candidateId) && candidateLogUpToDate) {
             votedFor = candidateId;
-            lastHeartbeatTime = System.currentTimeMillis(); // Reset timer upon voting YES
-            System.out.println("Node " + id + " voted YES for Node " + candidateId + " in Term " + candidateTerm);
+            resetElectionTimeout();
+            System.out.println("Node " + id + " voted YES for Node "
+                    + candidateId + " in Term " + candidateTerm);
             return true;
         }
 
-        System.out.println("Node " + id + " voted NO for Node " + candidateId + " in Term " + candidateTerm);
+        System.out.println("Node " + id + " voted NO for Node "
+                + candidateId + " in Term " + candidateTerm
+                + (candidateLogUpToDate ? " (already voted)" : " (stale log)"));
         return false;
     }
 
@@ -192,12 +231,14 @@ public class Node {
             votedFor = null;
         }
 
-        // Reject stale leaders
+        // Reject stale leaders.
         if (leaderTerm < currentTerm) {
             return false;
         }
 
-        // Reset election timer since we heard from the leader
+        // Accepting a same-term AppendEntries also makes a candidate a follower.
+        // Do not clear votedFor except when observing a strictly newer term.
+        state = NodeState.FOLLOWER;
         resetElectionTimeout();
 
         log.add(entry);
@@ -270,12 +311,13 @@ public class Node {
 
         if (leaderTerm >= this.currentTerm) {
 
-            if (leaderTerm > this.currentTerm || this.state == NodeState.CANDIDATE) {
-                this.state = NodeState.FOLLOWER;
+            // A heartbeat is an empty AppendEntries. It must NOT erase a vote
+            // in the same term, otherwise this node can vote twice (Raft §5.2).
+            if (leaderTerm > this.currentTerm) {
+                this.currentTerm = leaderTerm;
+                this.votedFor = null;
             }
-
-            this.currentTerm = leaderTerm;
-            this.votedFor = null;
+            this.state = NodeState.FOLLOWER;
             resetElectionTimeout();
 
             // If the leader has committed further than we have,
